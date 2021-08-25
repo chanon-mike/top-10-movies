@@ -5,6 +5,12 @@ from flask_wtf import FlaskForm
 from wtforms import StringField, SubmitField, FloatField
 from wtforms.validators import InputRequired, NumberRange
 import requests
+import os
+
+TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
+TMDB_DETAIL_URL = "https://api.themoviedb.org/3/movie/"
+TMDB_IMAGE_URL = "https://image.tmdb.org/t/p/w500"
+TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 
 # Configure app
 app = Flask(__name__)
@@ -21,10 +27,10 @@ class Movie(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(250), unique=True, nullable=False)
     year = db.Column(db.Integer, nullable=False)
-    description = db.Column(db.String(250), nullable=False)
-    rating = db.Column(db.Float, nullable=False)
-    ranking = db.Column(db.Integer, unique=True, nullable=False)
-    review = db.Column(db.String(250), nullable=False)
+    description = db.Column(db.String(500), nullable=False)
+    rating = db.Column(db.Float, nullable=True)
+    ranking = db.Column(db.Integer, nullable=True)
+    review = db.Column(db.String(250), nullable=True)
     img_url = db.Column(db.String(250), nullable=False)
 
 
@@ -42,30 +48,22 @@ class AddForm(FlaskForm):
     submit = SubmitField('Add Movie')
     
 
-# Add new row of data
-# new_movie = Movie(
-#     title="Phone Booth",
-#     year=2002,
-#     description="Publicist Stuart Shepard finds himself trapped in a phone booth, pinned down by an extortionist's sniper rifle. Unable to leave or receive outside help, Stuart's negotiation with the caller leads to a jaw-dropping climax.",
-#     rating=7.3,
-#     ranking=10,
-#     review="My favourite character was the caller.",
-#     img_url="https://image.tmdb.org/t/p/w500/tjrX2oWRCM3Tvarz38zlZM7Uc10.jpg"
-# )
-# db.session.add(new_movie)
-# db.session.commit()
 
-
+# Index of website
 @app.route("/")
 def home():
-    all_movies = db.session.query(Movie).all()
+    # Order ranking by rating
+    all_movies = Movie.query.order_by(Movie.title).all()
+    for i in range(1, len(all_movies)+1):
+        all_movies[i-1].ranking = i
+    db.session.commit()
     return render_template("index.html", movies=all_movies)
 
 
+# Edit rating and review
 @app.route('/edit', methods=['GET', 'POST'])
 def edit():
     form = EditForm()
-
     movie_id = request.args.get('id')
     movie_to_update = Movie.query.get(movie_id)
     if form.validate_on_submit():
@@ -73,12 +71,12 @@ def edit():
         movie_to_update.rating = form.rating.data
         movie_to_update.review = form.review.data
         db.session.commit()
-
         return redirect(url_for('home'))
         
     return render_template('edit.html', movie=movie_to_update, form=form)
 
 
+# Delete the database row
 @app.route('/delete')
 def delete():
     movie_id = request.args.get('id')
@@ -89,19 +87,46 @@ def delete():
     return redirect(url_for('home'))
 
 
+# Add new movie and redirect to movies list page
 @app.route('/add', methods=['GET', 'POST'])
 def add():
     form = AddForm()
     if form.validate_on_submit():
-        new_movie = {
-            "title": form.title.data
-        }
-        db.session.add(new_movie)
-        db.session.commit()
+        movie_title = form.title.data
+        response = requests.get(TMDB_SEARCH_URL, params={
+            "api_key": TMDB_API_KEY, 
+            "query": movie_title
+        })
+        data = response.json()["results"]
 
-        return redirect(url_for('home'))
-    
+        return render_template('select.html', movies=data)
+
     return render_template('add.html', form=form)
+
+
+# Movies list, add new row of data to database and redirect to edit(rating) page
+@app.route('/find')
+def find_movie():
+    # Get movie detail from api id
+    movie_api_id = request.args.get('id')
+    response = requests.get(f"{TMDB_DETAIL_URL}/{movie_api_id}", params={
+        "api_key": TMDB_API_KEY,
+        "language": "en-US"
+    })
+    data = response.json()
+
+    # Add new movie to the database
+    new_movie = Movie(
+        title=data["title"],
+        year=data["release_date"].split("-")[0],
+        description=data["overview"],
+        img_url=f"{TMDB_IMAGE_URL}/{data['backdrop_path']}"
+    )
+    db.session.add(new_movie)
+    db.session.commit()
+
+    return redirect(url_for('edit', id=new_movie.id))
+
 
 if __name__ == '__main__':
     db.create_all()
